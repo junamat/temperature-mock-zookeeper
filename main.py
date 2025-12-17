@@ -33,6 +33,8 @@ def watch_devices(children):
 
 # Definir una función que se ejecuta cuando se recibe la señal de interrupción
 def interrupt_handler(signal, frame):
+    global barrier
+    barrier.create()
     exit(0)
 
 def request(valor):
