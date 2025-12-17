@@ -7,7 +7,7 @@ services:
       - "2181:2181"
     environment:
       ZOO_MY_ID: 1
-      ZOO_SERVERS: server.1=0.0.0.0:2888:3888 server.2=zookeeper2:2888:3888 server.3=zookeeper3:2888:3888
+      ZOO_SERVERS: server.1=0.0.0.0:2888:3888
       ZOO_CFG_EXTRA: "clientPort=2181"
     volumes:
       - ./zk_data/zookeeper1/data:/data
@@ -20,64 +20,18 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
-
-  zookeeper2:
-    image: zookeeper:3.9
-    container_name: zookeeper2
-    restart: always
-    ports:
-      - "2182:2181"
-    environment:
-      ZOO_MY_ID: 2
-      ZOO_SERVERS: server.1=zookeeper1:2888:3888 server.2=0.0.0.0:2888:3888 server.3=zookeeper3:2888:3888
-      ZOO_CFG_EXTRA: "clientPort=2181"
-    volumes:
-      - ./zk_data/zookeeper2/data:/data
-      - ./zk_data/zookeeper2/datalog:/datalog
-    networks:
-      - zk-network
-    healthcheck:
-      test: ["CMD", "sh", "-c", "echo ruok | nc localhost 2181 || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-
-  zookeeper3:
-    image: zookeeper:3.9
-    container_name: zookeeper3
-    restart: always
-    ports:
-      - "2183:2181"
-    environment:
-      ZOO_MY_ID: 3
-      ZOO_SERVERS: server.1=zookeeper1:2888:3888 server.2=zookeeper2:2888:3888 server.3=0.0.0.0:2888:3888
-      ZOO_CFG_EXTRA: "clientPort=2181"
-    volumes:
-      - ./zk_data/zookeeper3/data:/data
-      - ./zk_data/zookeeper3/datalog:/datalog
-    networks:
-      - zk-network
-    healthcheck:
-      test: ["CMD", "sh", "-c", "echo ruok | nc localhost 2181 || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-
   practica3-1:
     image: practica3
     container_name: practica3-1
     depends_on:
       zookeeper1:
         condition: service_healthy
-      zookeeper2:
-        condition: service_healthy
-      zookeeper3:
-        condition: service_healthy
+      web:
+        condition: service_started
     command: ["1"]
     environment:
-      ZOOKEEPER_HOSTS: zookeeper1:2181,zookeeper2:2181,zookeeper3:2181
+      API_URL: "web"
+      ZOOKEEPER_HOSTS: zookeeper1:2181
     networks:
       - zk-network
 
@@ -87,13 +41,12 @@ services:
     depends_on:
       zookeeper1:
         condition: service_healthy
-      zookeeper2:
-        condition: service_healthy
-      zookeeper3:
-        condition: service_healthy
+      web:
+        condition: service_started
     command: ["2"]
     environment:
-      ZOOKEEPER_HOSTS: zookeeper1:2181,zookeeper2:2181,zookeeper3:2181
+      API_URL: "web"
+      ZOOKEEPER_HOSTS: "zookeeper1:2181"
     networks:
       - zk-network
 
@@ -103,16 +56,79 @@ services:
     depends_on:
       zookeeper1:
         condition: service_healthy
-      zookeeper2:
-        condition: service_healthy
-      zookeeper3:
-        condition: service_healthy
+      web:
+        condition: service_started
     command: ["3"]
     environment:
-      ZOOKEEPER_HOSTS: zookeeper1:2181,zookeeper2:2181,zookeeper3:2181
+      API_URL: "web"
+      ZOOKEEPER_HOSTS: zookeeper1:2181
     networks:
       - zk-network
-
+  web:
+    # replace username/repo:tag with your name and image details
+    image: apfnam/get-started:part2
+    deploy:
+      restart_policy:
+        condition: on-failure
+    ports:
+      - "4000:80"
+    environment:
+      - REDIS_HOST=redis
+      - SERVING_HOST=serving
+    networks:
+      - zk-network
+  visualizer:
+    image: dockersamples/visualizer:stable
+    ports:
+      - "8080:8080"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
+    deploy:
+      placement:
+        constraints: [ node.role == manager ]
+    networks:
+      - zk-network
+  serving:
+    image: tensorflow/serving
+    ports:
+      - "8500:8500"
+      - "8501:8501"
+    volumes:
+      - "./models:/models"
+      - "./models/models_config:/models_config"
+    command: >
+      --model_config_file=/models_config/models.config
+      --tensorflow_session_parallelism=2
+    deploy:
+      restart_policy:
+        condition: on-failure
+      placement:
+        constraints: [ node.role == manager ]
+    networks:
+      - zk-network
+  redis:
+    image: redis
+    ports:
+      - "6379:6379"
+    deploy:
+      placement:
+        constraints: [ node.role == manager ]
+    networks:
+      - zk-network
+  grafana:
+    image: grafana/grafana
+    ports:
+      - 3000:3000
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - redis
+    networks:
+      - zk-network
+    environment:
+      GF_INSTALL_PLUGINS: redis-datasource
+volumes:
+  grafana_data:
 networks:
   zk-network:
     driver: bridge

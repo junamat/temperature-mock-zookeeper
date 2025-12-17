@@ -1,3 +1,6 @@
+import os
+import sys
+
 from kazoo.client import KazooClient
 from kazoo.recipe.barrier import Barrier
 from kazoo.recipe.counter import Counter
@@ -10,13 +13,14 @@ import numpy as np
 from kazoo.recipe.watchers import ChildrenWatch, DataWatch
 import requests
 
+API_URL = os.getenv("API_URL", "localhost:8080")
+SAMPLING_PERIOD = 2
+
 def watch_api_url(data, stat):
     if(data):
         global API_URL
         API_URL = data.decode("utf-8")
         print("API_URL:", API_URL)
-    else:
-        exit(0)
     return True
 
 def watch_sampling_period(data, stat):
@@ -24,8 +28,6 @@ def watch_sampling_period(data, stat):
         global SAMPLING_PERIOD
         SAMPLING_PERIOD = float(data.decode("utf-8"))
         print("SAMPLING_PERIOD:", SAMPLING_PERIOD)
-    else:
-        exit(0)
     return True
 
 def watch_devices(children):
@@ -47,16 +49,22 @@ def request(valor):
 signal.signal(signal.SIGINT, interrupt_handler)
 
 # Crear un identificador para la aplicación
-id = input("Introduce un identificador: ")
+if len(sys.argv) != 2:
+    id = input("Introduce un identificador: ")
+else :
+    id = sys.argv[1]
 
 # Crear un cliente kazoo y conectarlo con el servidor zookeeper
-client = KazooClient(hosts="127.0.0.1:2181")
+ZOOKEEPER_HOSTS = os.getenv("ZOOKEEPER_HOSTS", "localhost:2181")
+print("ZOOKEEPER HOSTS:", ZOOKEEPER_HOSTS)
+client = KazooClient(hosts=ZOOKEEPER_HOSTS)
 client.start()
 
 # Crear una elección entre las aplicaciones y elegir un líder
 election = Election(client, "/election", id)
 barrier = Barrier(client, "/barrier")
 counter = Counter(client, "/counter")
+barrier.create()
 
 client.ensure_path("/mediciones")
 
@@ -96,8 +104,8 @@ def election_func():
 election_thread = threading.Thread(target=election_func, daemon=True)
 # Iniciar el hilo
 election_thread.start()
-
-client.create(f"/mediciones/{id}", ephemeral=True)
+if(client.exists(f"/mediciones/{id}") == None):
+    client.create(f"/mediciones/{id}", ephemeral=True)
 
 DataWatch(client, "/config/sampling_period", watch_sampling_period)
 DataWatch(client, "/config/api_url", watch_api_url)
