@@ -79,21 +79,22 @@ def leader_func():
     ChildrenWatch(client, "/mediciones", watch_devices)
 
     while True:
-        barrier.create()
         print("Soy lider")
         time.sleep(SAMPLING_PERIOD)
         # Obtener los hijos de /mediciones
-        list = []
+        _list = []
         children = client.get_children("/mediciones")
         for child in children:
-            list.append(int(client.get(f"/mediciones/{child}")[0].decode('utf-8')))
-        barrier.remove()
+            _list.append(int(client.get(f"/mediciones/{child}")[0].decode('utf-8')))
         # Calcular la media de los valores
-        mean = np.mean(list)
+        mean = np.mean(_list)
         # Mostrar la media por consola
         print(f"Media: {mean}")
         # Enviar la media usando requests
         request(mean)
+        print("abro la barrera")
+        barrier.remove()
+        barrier.create()
 
 
 
@@ -129,3 +130,5 @@ while True:
     print("Número de mediciones:", counter.value)
     # Esperar al lider
     barrier.wait()
+    # buffer para evitar que los sensores hagan varias mediciones antes de que se vuelva a cerrar la barrera
+    time.sleep(SAMPLING_PERIOD/100)
