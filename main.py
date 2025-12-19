@@ -42,8 +42,11 @@ def interrupt_handler(signal, frame):
 def request(valor):
     url = f'http://{API_URL}/nuevo'
     params = {'dato': {valor}}
-    response = requests.get(url, params=params)
-    print(response.status_code)
+    try:
+        response = requests.get(url, params=params)
+        print(response.status_code)
+    except Exception as e:
+        print("Ocurrió un error al intentar mandar la request")
 
 # Registrar la función como el manejador de la señal de interrupción
 signal.signal(signal.SIGINT, interrupt_handler)
@@ -116,6 +119,9 @@ while True:
     value = random.randint(75, 85)
 
     # Actualizar el valor de /values asociado al nodo
+    # Hacemos la comprobación aquí y no antes para evitar casos en los que comprobamos y el nodo muere antes de llegar al set
+    if (client.exists(f"/mediciones/{id}") == None):
+        client.create(f"/mediciones/{id}", ephemeral=True)
     client.set(f"/mediciones/{id}", value.__str__().encode())
 
     counter += 1
