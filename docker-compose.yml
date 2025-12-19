@@ -21,7 +21,7 @@ services:
       retries: 5
       start_period: 10s
   practica3-1:
-    image: practica3
+    image: apfnam/zk_temp
     container_name: practica3-1
     depends_on:
       zookeeper1:
@@ -36,7 +36,7 @@ services:
       - zk-network
 
   practica3-2:
-    image: practica3
+    image: apfnam/zk_temp
     container_name: practica3-2
     depends_on:
       zookeeper1:
@@ -51,7 +51,7 @@ services:
       - zk-network
 
   practica3-3:
-    image: practica3
+    image: apfnam/zk_temp
     container_name: practica3-3
     depends_on:
       zookeeper1:
