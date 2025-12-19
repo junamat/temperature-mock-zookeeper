@@ -1,134 +1,187 @@
 import os
 import sys
-
-from kazoo.client import KazooClient
-from kazoo.recipe.barrier import Barrier
-from kazoo.recipe.counter import Counter
-from kazoo.recipe.election import Election
 import threading
 import time
 import random
 import signal
 import numpy as np
-from kazoo.recipe.watchers import ChildrenWatch, DataWatch
 import requests
 
+from kazoo.client import KazooClient
+from kazoo.recipe.barrier import Barrier
+from kazoo.recipe.counter import Counter
+from kazoo.recipe.election import Election
+from kazoo.recipe.watchers import ChildrenWatch, DataWatch
+from kazoo.exceptions import KazooException, ConnectionLoss, SessionExpiredException
+from kazoo.retry import KazooRetry
+
+MEDICIONES = "/mediciones"
 API_URL = os.getenv("API_URL", "localhost:8080")
 SAMPLING_PERIOD = 2
 
+
 def watch_api_url(data, stat):
-    if(data):
+    if data:
         global API_URL
         API_URL = data.decode("utf-8")
         print("API_URL:", API_URL)
     return True
 
+
 def watch_sampling_period(data, stat):
-    if(data):
+    if data:
         global SAMPLING_PERIOD
         SAMPLING_PERIOD = float(data.decode("utf-8"))
         print("SAMPLING_PERIOD:", SAMPLING_PERIOD)
     return True
 
+
 def watch_devices(children):
     print("Change in devices:", children)
 
-# Definir una función que se ejecuta cuando se recibe la señal de interrupción
+
+# Handler de interrupción
 def interrupt_handler(signal, frame):
     global barrier
-    barrier.create()
-    exit(0)
+    try:
+        barrier.create()
+    except:
+        pass
+    sys.exit(0)
+
 
 def request(valor):
-    url = f'http://{API_URL}/nuevo'
-    params = {'dato': {valor}}
     try:
-        response = requests.get(url, params=params)
+        url = f'http://{API_URL}/nuevo'
+        params = {'dato': {valor}}
+        response = requests.get(url, params=params, timeout=1)  # Timeout para no bloquear
         print(response.status_code)
     except Exception as e:
-        print("Ocurrió un error al intentar mandar la request")
+        print("Error en request:", e)
 
-# Registrar la función como el manejador de la señal de interrupción
+
 signal.signal(signal.SIGINT, interrupt_handler)
 
-# Crear un identificador para la aplicación
 if len(sys.argv) != 2:
     id = input("Introduce un identificador: ")
-else :
+else:
     id = sys.argv[1]
 
-# Crear un cliente kazoo y conectarlo con el servidor zookeeper
 ZOOKEEPER_HOSTS = os.getenv("ZOOKEEPER_HOSTS", "localhost:2181")
-print("ZOOKEEPER HOSTS:", ZOOKEEPER_HOSTS)
-client = KazooClient(hosts=ZOOKEEPER_HOSTS)
+
+retry_policy = KazooRetry(max_tries=-1, delay=0.5, max_delay=2)
+
+print(f"Conectando a: {ZOOKEEPER_HOSTS}")
+client = KazooClient(hosts=ZOOKEEPER_HOSTS, connection_retry=retry_policy)
 client.start()
 
-# Crear una elección entre las aplicaciones y elegir un líder
 election = Election(client, "/election", id)
 barrier = Barrier(client, "/barrier")
 counter = Counter(client, "/counter")
-barrier.create()
 
-client.ensure_path("/mediciones")
+client.ensure_path(MEDICIONES)
+try:
+    barrier.create()
+except KazooException:
+    pass
 
 
-# Definir una función que se ejecuta cuando una aplicación es elegida líder
 def leader_func():
     global counter
-    counter -= counter.value
-    ChildrenWatch(client, "/mediciones", watch_devices)
+    try:
+        counter -= counter.value
+        ChildrenWatch(client, MEDICIONES, watch_devices)
+    except Exception:
+        pass
 
     while True:
-        print("Soy lider")
-        time.sleep(SAMPLING_PERIOD)
-        # Obtener los hijos de /mediciones
-        _list = []
-        children = client.get_children("/mediciones")
-        for child in children:
-            _list.append(int(client.get(f"/mediciones/{child}")[0].decode('utf-8')))
-        # Calcular la media de los valores
-        mean = np.mean(_list)
-        # Mostrar la media por consola
-        print(f"Media: {mean}")
-        # Enviar la media usando requests
-        request(mean)
-        print("abro la barrera")
-        barrier.remove()
-        barrier.create()
+        try:
+            print("Soy lider")
+            time.sleep(SAMPLING_PERIOD)
+
+            # Obtener hijos
+            _list = []
+            children = client.get_children(MEDICIONES)
+            for child in children:
+                try:
+                    data, _ = client.get(f"{MEDICIONES}/{child}")
+                    _list.append(int(data.decode('utf-8')))
+                except (ValueError, KazooException):
+                    continue  # Si un nodo falla al leer, lo saltamos
+
+            if _list:
+                mean = np.mean(_list)
+                print(f"Media: {mean}")
+                request(mean)
+
+            print("Ciclo de barrera...")
+            try:
+                barrier.remove()
+            except KazooException:
+                pass
+
+            try:
+                barrier.create()
+            except KazooException:
+                pass
+
+        except (ConnectionLoss, SessionExpiredException):
+            print("Lider: Perdida de conexión temporal... reintentando")
+            time.sleep(1)
+        except Exception as e:
+            print(f"Error inesperado en lider: {e}")
+            time.sleep(1)
 
 
-
-# Definir una función que se encarga de lanzar la parte de la elección
 def election_func():
-    # Participar en la elección con el identificador de la aplicación
-    election.run(leader_func)
+    while True:
+        try:
+            election.run(leader_func)
+        except (ConnectionLoss, SessionExpiredException):
+            print("Elección: Conexión perdida, reintentando elección...")
+            time.sleep(1)
+        except Exception as e:
+            print(f"Error en elección: {e}")
+            time.sleep(2)
 
 
-# Crear un hilo para ejecutar la función election_func
 election_thread = threading.Thread(target=election_func, daemon=True)
-# Iniciar el hilo
 election_thread.start()
-if(client.exists(f"/mediciones/{id}") == None):
-    client.create(f"/mediciones/{id}", ephemeral=True)
 
-DataWatch(client, "/config/sampling_period", watch_sampling_period)
-DataWatch(client, "/config/api_url", watch_api_url)
+# Configuración de Watchers
+if client.exists("/config/sampling_period"):
+    DataWatch(client, "/config/sampling_period", watch_sampling_period)
+if client.exists("/config/api_url"):
+    DataWatch(client, "/config/api_url", watch_api_url)
 
-# Enviar periódicamente un valor a una subruta de /mediciones con el identificador de la aplicación
 while True:
-    # Generar una nueva medición aleatoria
-    value = random.randint(75, 85)
+    try:
+        # Generar medición
+        value = random.randint(75, 85)
 
-    # Actualizar el valor de /values asociado al nodo
-    # Hacemos la comprobación aquí y no antes para evitar casos en los que comprobamos y el nodo muere antes de llegar al set
-    if (client.exists(f"/mediciones/{id}") == None):
-        client.create(f"/mediciones/{id}", ephemeral=True)
-    client.set(f"/mediciones/{id}", value.__str__().encode())
+        node_path = f"{MEDICIONES}/{id}"
+        if client.exists(node_path) is None:
+            print("Re-creando nodo efímero tras desconexión...")
+            client.create(node_path, ephemeral=True)
 
-    counter += 1
+        client.set(node_path, str(value).encode())
 
-    print("Número de mediciones:", counter.value)
-    # Esperar al lider
-    barrier.wait()
-    # buffer para evitar que los sensores hagan varias mediciones antes de que se vuelva a cerrar la barrera
-    time.sleep(SAMPLING_PERIOD/100)
+        try:
+            counter += 1
+            print("Número de mediciones:", counter.value)
+        except KazooException:
+            print("No se pudo actualizar contador (sin red)")
+
+        print("Esperando barrera...")
+        barrier.wait(timeout=SAMPLING_PERIOD * 2)  # Timeout para no quedarse pillado eternamente si el líder muere
+
+        # Buffer
+        time.sleep(SAMPLING_PERIOD / 100)
+
+    except (ConnectionLoss, SessionExpiredException):
+        print("⚠️ Conexión perdida con Zookeeper. Reintentando...")
+        # Dormimos un poco para dar tiempo a Kazoo a reconectar en background
+        time.sleep(1)
+    except Exception as e:
+        print(f"Error en bucle principal: {e}")
+        time.sleep(1)
