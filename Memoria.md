@@ -52,7 +52,7 @@ Para evitar errores de conexión al inicio (dado que Zookeeper tarda en arrancar
 ### **4.2. Red y Comunicación**
 Los contenedores se comunican a través de la red interna `zk-network`. Las peticiones a la API utilizan el nombre del servicio interno (`web`) y su puerto interno (80), que se define de forma implícita al hacer una request http, no el expuesto al host, garantizando la comunicación dentro de la red Docker.
 
-## **5. Problemas detectados
+## 5. Problemas detectados
 
 * Si se elige un timeout entre mediciones muy largo el sistema tiende a implosionar debido a que Zookeeper no detecta ningún input en demasiado tiempo (por defecto 10s) y decide cerrar el flujo TCP. Esto es configurable pero no es tan relevante para exponer el funcionamiento de Zookeeper.
 * Mientras que se elige un nuevo lider los previos seguidores van ciclando mediciones en vez de pararse en seco; Esto es debido a que le ponemos un timeout a la barrera que si se pasa la barrera se abre. Esto es necesario si queremos que el sistema esté blindado ante caidas de los nodos de Zookeeper, pues si se cae el nodo donde una de las instancias de la práctica tiene la barrera no va a ser capaz de reconectarse.
